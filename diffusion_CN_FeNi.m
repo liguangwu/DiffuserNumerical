@@ -1,0 +1,108 @@
+function [time, misfit, rd, x_grid, u_fit, isbreak, Ibd]= diffusion_CN_FeNi(...
+    profile_x,profile_C,Weight,initial_x,initial_C,Nx,f_dt,T,DiffCoef)
+% isothermal conditions, calculate timescale
+% Crank-Nicolson solution for D=f(T,P,fO2,C...)
+isbreak=0;
+%set parameters------------------------------------------------------------
+Lx=max(initial_x)-min(initial_x); %diffusion profile length
+dx=Lx/Nx; %grid size in x
+x_grid=min(initial_x)+(0:Nx)*dx; %x values on the grid
+x_grid=x_grid';
+%initial composition
+u = interp1(initial_x,initial_C,x_grid,"linear","extrap");
+D=exp(DiffCoef(1)+DiffCoef(3)*u+DiffCoef(4)/T+DiffCoef(6)*u/T);
+dt=(dx)^2/(2*max(D))*f_dt; %grid size of time, ensure stability
+%Prepare misfit calculation between data and model:
+t = 0;
+time = [];
+u_fit=[];
+misfit = [];
+rd=[]; %residuals
+
+%% finite difference modeling
+isstop=0; %find the error curve
+i=0; %count time steps
+x=[x_grid; flipud(x_grid); x_grid(1)];
+Ibd=[NaN NaN]; %95c.l. of best fit
+while ~isstop
+    i=i+1;
+    t = t+dt; % update time (in sec)
+    time = cat(1,time,t); % store time
+    
+    a0=-4*D(2:end-1)+D(3:end)-D(1:end-2);
+    b0=8*dx^2/dt+8*D(2:end-1);
+    c0=-4*D(2:end-1)-D(3:end)+D(1:end-2);
+    d0=u(1:end-2).*(-a0)+u(2:end-1).*(8*dx^2/dt-8*D(2:end-1))+u(3:end).*(-c0);
+    %a*C(i-1) + b*C(i) + c*C(i+1) = d
+    a=[0; a0; 0];
+    b=[1; b0; 1];
+    c=[0; c0; 0];
+    d=[u(1); d0; u(end)];
+    %solve the tridiagonal matrix
+    u=tridiag(a,b,c,d);
+    u_fit=cat(2,u_fit,u);
+       
+    D=exp(DiffCoef(1)+DiffCoef(3)*u+DiffCoef(4)/T+DiffCoef(6)*u/T);
+    dt=(dx)^2/(2*max(D))*f_dt;
+    
+    % %difference between last and this step
+    % if i>1
+    %     delta=sum((u-u_fit(:,end-1)).^2);
+    %     tol=sum((u_fit(:,end-1)*tol_percent).^2); %tolerance
+    %     if delta<=tol
+    %         isstop = 1; %when to stop
+    %     end
+    % end
+
+    %misfit calculation
+    profile_pred = interp1(x_grid,u,profile_x,'nearest');
+    misfit = cat(1, misfit, sum(Weight.*(profile_pred-profile_C).^2) );
+    rd = cat(2,rd,profile_pred-profile_C);
+    
+    %extend steps
+    if i>3
+        pk=findpeaks(-misfit);
+        if ~isempty(pk)
+            %find the error curve
+            [~,Imin]=min(misfit);
+            y=[u_fit(:,1); flipud(u_fit(:,end)); u_fit(1,1)];
+            [in, on]=inpolygon(profile_x, profile_C, x, y);
+            useful=in | on;
+
+            for j=(Imin-1):-1:1
+                Ibd(1)=j; %left bound site
+                tmp=misfit; tmp(1:Imin)=[];
+                [~,I]=min(abs(tmp-misfit(j))); %right bound site
+                Ibd(2)=I+Imin;
+                %how many spots are within the bound
+                y=[u_fit(:,j); flipud(u_fit(:,Ibd(2))); u_fit(1,j)];
+                [in, on]=inpolygon(profile_x(useful), profile_C(useful), x, y);
+                if (sum(in)+sum(on)) >= floor(0.95*sum(useful))
+                    break
+                end
+                
+            end
+
+            if sum(useful)>1 && misfit(end)>misfit(j)
+                isstop=1;
+            end
+        end
+    end
+
+    % % Plot
+    % drawnow
+    % plot(app.curvefitting,x_grid,u,'r-')
+    % hold(app.curvefitting,'on')
+    % plot(app.curvefitting,profile_x,profile_C,'ko')
+    % hold(app.curvefitting,'off')
+    % plot(app.time,time,misfit,'k-')
+
+end
+% [~,timestep]=min(misfit)
+
+% Plot
+% plot(x_grid,u,'r-')
+% hold('on')
+% plot(profile_x,profile_C,'ko')
+% hold('off')
+% plot(time,misfit,'k-')
