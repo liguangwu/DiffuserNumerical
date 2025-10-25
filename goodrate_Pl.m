@@ -1,5 +1,5 @@
-function [iswithbd, t, C_final, T_final, misfit_final, rd_final] = goodrate_Pl(coolingrate, coolingpath, ...
-    u0, XAn_grid, T0, DiffCoef, fO2, P, aSiO2, dx, x_grid, profile_x, profile_C, Weight, misfit_95cl, f_dt, tol_percent)
+function [iswithbd, t_final, C_final, C_final_conv, T_final, misfit_final, rd_final] = goodrate_Pl(coolingrate, coolingpath, ...
+    u0, XAn_grid, T0, DiffCoef, fO2, P, aSiO2, dx, x_grid, profile_x, profile_C, Weight, misfit_95cl, f_dt, tol_percent, deconv_parameters)
 %The diffusion continues when the temperature decreases until T reaches a
 %threshold value capable of freezing the diffusion profile, then
 %iswithbd: the final diffusion curve lies between the 95c.l. of best fit
@@ -8,9 +8,11 @@ function [iswithbd, t, C_final, T_final, misfit_final, rd_final] = goodrate_Pl(c
 iswithbd = zeros(length(coolingrate), 1);
 istooslow = zeros(length(coolingrate), 1);
 istoofast = zeros(length(coolingrate), 1);
+t_final = NaN(length(coolingrate),1); %final timescale when the diffuison is frozen
 misfit_final = NaN(length(coolingrate),1); %final misfit when the diffuison is frozen
 T_final = NaN(length(coolingrate),1); %final temperature when the diffusion ceases
 C_final = NaN(length(u0),1); %final concentration profile when the diffusion ceases
+C_final_conv = NaN(length(u0),1); %for convolution, final concentration profile when the diffusion ceases
 rd_final = NaN(length(profile_C),1); %final residuals when the diffusion ceases
 
 for cr=1:length(coolingrate)
@@ -30,6 +32,8 @@ for cr=1:length(coolingrate)
     Di=[];
     t = 0;
     u_fit=[];
+    u_fit_conv=[]; %for convolution
+    rd=[];
     while ~isstop
 
         i=i+1;
@@ -49,6 +53,15 @@ for cr=1:length(coolingrate)
         u=tridiag(a,b,c,d);
         
         u_fit=cat(2,u_fit,u);
+        %convolution=================
+        deconvolution=deconv_parameters{strcmp(deconv_parameters(:,1), 'deconvolute'),2};
+        if deconvolution
+            u2 = conv_profile(x_grid,u,deconv_parameters);
+        else
+            u2 = u;
+        end
+        u_fit_conv = cat(2,u_fit_conv,u2);
+        %=========================
 
         %update D
         switch coolingpath
@@ -68,18 +81,21 @@ for cr=1:length(coolingrate)
                 Temp(end-1:end)=[];
                 time(end-1:end)=[];
                 u_fit(:,end-1:end)=[];
+                u_fit_conv(:,end-1:end)=[];
                 Di(:,end)=[];
                 misfit(end)=[];
                 rd(:,end)=[];
                 D=Di(:,end);
-            else
+            elseif length(Temp)>1
                 T=Temp(end-1);
                 t=time(end-1);
                 Temp(end)=[];
                 time(end)=[];
                 u_fit(:,end)=[];
+                u_fit_conv(:,end)=[];
             end
             u=u_fit(:,end);
+            u2=u_fit_conv(:,end);
             dt=dt0; %decreases T more slowly
             dt_fix=1;
             continue
@@ -102,31 +118,56 @@ for cr=1:length(coolingrate)
         end
 
         %misfit calculation
-        profile_pred = interp1(x_grid,u,profile_x,'nearest');
+        profile_pred = interp1(x_grid,u2,profile_x,'nearest');
         misfit = cat(1, misfit, sum(Weight.*(profile_pred-profile_C).^2) );
-        rd = profile_pred-profile_C;
+        rd = cat(2, rd, profile_pred-profile_C);
 
         %difference between last and this step
         if i>1
-            delta=sum((u-u_fit(:,end-1)).^2);
-            tol=sum((u_fit(:,end-1)*tol_percent).^2); %tolerance
-            if delta<=tol
+            delta=sum((u2-u_fit_conv(:,end-1)).^2);
+            tol=sum((u_fit_conv(:,end-1)*tol_percent).^2); %tolerance
+            if delta<=tol %|| T<(800+273.15)
                 isstop = 1; %when to stop
+                t_final(cr) = t;
                 misfit_final(cr) = misfit(end);
                 T_final(cr) = T;
                 C_final(:,cr) = u;
-                rd_final(:,cr) = rd;
+                C_final_conv(:,cr) = u2;
+                rd_final(:,cr) = rd(:,end);
                 if misfit(end)<=misfit_95cl %when the diffusion ceases, will the profile lcoate between the 95c.l. of best fit
                     iswithbd(cr)=1;
-                    % figure(1)
-                    % hold on
-                    % plot(Temp-273.15,misfit) %show closure temeprature
-                    % hold off
-                    % xlabel('Temperature (\circC)')
-                    % ylabel('misfit changes with T for each suitable cooling rate')
-                    % title(['Check whether msifit is constant when T drops to the end,'...
-                    %     newline, 'i.e., whether diffusion profile is frozen.', newline,...
-                    %     'If not, users have to lower the tolerance that defines when misfit looks constant'])
+                    if ~isunix %not available on web app
+                        figure(1);
+                        hold on
+                        x=Temp-273.15;
+                        plot(x,misfit,'-','Color',[0.8 0.8 0.8]); %show closure temeprature
+                        plot(x(end),misfit(end),'k.', 'MarkerSize', 10)
+                        hold off
+                        xlabel('Temperature (\circC)')
+                        ylabel('RSS changes with T for each suitable cooling rate')
+                        title(['Check whether msifit is constant when T drops to the end,'...
+                            newline, 'i.e., whether diffusion profile is frozen.', newline,...
+                            'If not, users have to lower the tolerance that defines when misfit is constant'])
+                        % x=time;
+                        % plot(x,misfit,'-','Color',[0.8 0.8 0.8]); %show closure temeprature
+                        % [changePoints, ~] = findchangepts(misfit, 'Statistic', 'mean', 'MinThreshold', 0.1);
+                        % if ~isempty(changePoints)
+                        %     stable_start = changePoints(end); %stable since last change point
+                        %     t_final(cr) = time(stable_start);
+                        %     misfit_final(cr) = misfit(stable_start);
+                        %     T_final(cr) = Temp(stable_start);
+                        %     C_final(:,cr) = u_fit(:,stable_start);
+                        %     C_final_conv(:,cr) = u_fit_conv(:,stable_start);
+                        %     rd_final(:,cr) = rd(:,stable_start);
+                        %     plot(x(stable_start), misfit(stable_start), 'k.', 'MarkerSize', 10);
+                        % end
+                        % hold off
+                        % xlabel('Time (s)')
+                        % ylabel(['RSS changes with time', newline, ' for each suitable cooling rate (each line)'])
+                        % title(['Check whether msifit is constant when time elapses,'...
+                        %     newline, 'i.e., whether diffusion profile is frozen.', ...
+                        %     newline, 'Black spots show the frozen time'])
+                    end
                 end
                 if min(misfit)>=misfit(end) %whether reaches the best fit
                     istoofast(cr)=1;

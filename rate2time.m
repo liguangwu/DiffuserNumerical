@@ -85,7 +85,7 @@ parfor cr=1:length(coolingrate)
         if i>1
             delta=sum((u-u_fit(:,end-1)).^2);
             tol=sum((u_fit(:,end-1)*tol_percent).^2); %tolerance
-            if delta<=tol
+            if delta<=tol %|| T<(800+273.15)
                 isstop = 1; %when to stop
                 coolingtime(cr) = t;
                 Temp_final(cr) = T;
